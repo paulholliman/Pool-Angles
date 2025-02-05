@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Pocket Pool Shot Calculator with Cue Ball Diagram, Blocking, & Bank Shots</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      text-align: center;
+      background-color: #eee;
+      margin: 0;
+      padding: 0;
+    }
+    canvas {
+      border: 2px solid #333;
+      margin-top: 20px;
+      touch-action: none; /* for touch devices */
+    }
+    #message {
+      font-size: 1.1em;
+      margin-top: 10px;
+    }
+    /* Legend styling */
+    #legend {
+      margin-top: 20px;
+      text-align: left;
+      display: inline-block;
+    }
+    #legend h2 {
+      margin-bottom: 5px;
+    }
+    #legend ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    #legend li {
+      margin: 5px 0;
+      font-size: 1em;
+      line-height: 1.2em;
+    }
+    .ball {
+      display: inline-block;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      margin-right: 8px;
+      vertical-align: middle;
+      border: 1px solid #000;
+    }
+    .cue { background-color: white; }
+    .object { background-color: red; }
+    .block { background-color: blue; }
+    /* Style for the cue ball diagram container */
+    #cueBallContainer {
+      margin-top: 20px;
+    }
+    #cueBallDiagram {
+      border: 2px solid #333;
+      background-color: #fff;
+    }
+  </style>
+</head>
+<body>
+  <h1>Pocket Pool Shot Calculator</h1>
+  <p>
+    Drag the balls to position. Then click (or tap) on one of the pockets (black circles) to calculate the shot path.<br>
+    Green (or orange for bank shots) shows the cue ball’s shot path (with a ghost ball marker in cyan) and blue shows the object ball’s path.<br>
+    The message area recommends the type of English (spin) and force. A separate cue ball diagram (below) shows where to strike the cue ball.
+  </p>
+  <!-- Main pool table canvas -->
+  <canvas id="poolTable" width="800" height="400"></canvas>
+  <div id="message"></div>
+  
+  <!-- Legend Section -->
+  <div id="legend">
+    <h2>Legend</h2>
+    <ul>
+      <li><span class="ball cue"></span> Cue Ball (White)</li>
+      <li><span class="ball object"></span> Object Ball (Red)</li>
+      <li><span class="ball block"></span> Blocking Ball (Blue)</li>
+    </ul>
+  </div>
+  
+  <!-- Separate cue ball diagram -->
+  <div id="cueBallContainer">
+    <h2>Cue Ball Diagram (Recommended Strike)</h2>
+    <canvas id="cueBallDiagram" width="100" height="100"></canvas>
+  </div>
+
+  <script>
+    // === TABLE & PLAYING SURFACE DIMENSIONS ===
+    const canvas = document.getElementById('poolTable');
+    const ctx = canvas.getContext('2d');
+    const tableWidth = canvas.width;
+    const tableHeight = canvas.height;
+    const railWidth = 40;  // thickness of the rail (non-playing area)
+
+    // Playing surface (felt) is inset within the full table:
+    const playAreaX = railWidth;
+    const playAreaY = railWidth;
+    const playAreaWidth = tableWidth - 2 * railWidth;
+    const playAreaHeight = tableHeight - 2 * railWidth;
+
+    const ballRadius = 10;
+    const pocketRadius = 15;
+
+    // === POCKETS (Standard American Pool Table) ===
+    // Six pockets: top row (left, middle, right) and bottom row (left, middle, right).
+    const pockets = [
+      { x: playAreaX, y: playAreaY },                                   // Top-Left
+      { x: playAreaX + playAreaWidth/2, y: playAreaY },                   // Top-Middle
+      { x: playAreaX + playAreaWidth, y: playAreaY },                     // Top-Right
+      { x: playAreaX, y: playAreaY + playAreaHeight },                    // Bottom-Left
+      { x: playAreaX + playAreaWidth/2, y: playAreaY + playAreaHeight },    // Bottom-Middle
+      { x: playAreaX + playAreaWidth, y: playAreaY + playAreaHeight }       // Bottom-Right
+    ];
+
+    // === BALLS (Starting positions inside the playing surface) ===
+    const balls = {
+      cue:    { x: playAreaX + 50, y: playAreaY + playAreaHeight/2, color: 'white' },
+      object: { x: playAreaX + playAreaWidth/2, y: playAreaY + playAreaHeight/2, color: 'red' },
+      block:  { x: playAreaX + playAreaWidth/3, y: playAreaY + playAreaHeight/2, color: 'blue' }
+    };
+
+    // Variables for dragging
+    let draggingBall = null;
+    let dragOffset = { x: 0, y: 0 };
+
+    // Global variable to hold the shot path (if calculated).
+    // Structure examples:
+    //   { type: 'direct', ghost: {x,y}, pocket: {x,y}, strike: {x,y} }
+    //   { type: 'bank', ghost: {x,y}, pocket: {x,y}, bounce: {x,y}, cushion: 'top', strike: {x,y} }
+    let shotPath = null;
+
+    // Get the cue ball diagram canvas and context.
+    const cueDiagramCanvas = document.getElementById('cueBallDiagram');
+    const cueDiagramCtx = cueDiagramCanvas.getContext('2d');
+    const cueDiagramWidth = cueDiagramCanvas.width;
+    const cueDiagramHeight = cueDiagramCanvas.height;
+    const diagramCenter = { x: cueDiagramWidth / 2, y: cueDiagramHeight / 2 };
+    const diagramBallRadius = 40;  // Draw a large cue ball in the diagram
+
+    // === DRAWING FUNCTIONS ===
+
+    function draw() {
+      drawTable();
+      drawDiamonds();
+      drawPockets();
+      drawBalls();
+      drawShotPath();
+      drawCueBallDiagram();  // Update the separate cue ball diagram
+    }
+
+    // Draw the full table: first the rail, then the playing surface.
+    function drawTable() {
+      // Draw rail (wood-like color)
+      ctx.fillStyle = "#8B4513"; // SaddleBrown
+      ctx.fillRect(0, 0, tableWidth, tableHeight);
+      
+      // Draw playing surface (felt)
+      ctx.fillStyle = "#35654d"; // felt green
+      ctx.fillRect(playAreaX, playAreaY, playAreaWidth, playAreaHeight);
+    }
+
+    // --- DIAMOND DRAWING HELPERS ---
+    function drawDiamondsOnHorizontalSegment(xStart, xEnd, y, numDiamonds, diamondSize, isTop) {
+      const offsetY = isTop ? -diamondSize : diamondSize;
+      for (let i = 1; i <= numDiamonds; i++) {
+        const x = xStart + (i / (numDiamonds + 1)) * (xEnd - xStart);
+        drawDiamond(x, y + offsetY, diamondSize, "white");
+      }
+    }
+    function drawDiamondsOnVerticalSegment(yStart, yEnd, x, numDiamonds, diamondSize, isLeft) {
+      const offsetX = isLeft ? -diamondSize : diamondSize;
+      for (let i = 1; i <= numDiamonds; i++) {
+        const y = yStart + (i / (numDiamonds + 1)) * (yEnd - yStart);
+        drawDiamond(x + offsetX, y, diamondSize, "white");
+      }
+    }
+    function drawDiamond(x, y, size, color) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(x, y - size);
+      ctx.lineTo(x + size, y);
+      ctx.lineTo(x, y + size);
+      ctx.lineTo(x - size, y);
+      ctx.closePath();
+      ctx.fill();
+    }
+    
+    // --- DRAW DIAMONDS ON THE RAILS ---
+    function drawDiamonds() {
+      const diamondSize = 8;
+      const numDiamondsHorizontal = 3; // three per segment
+
+      // Top rail: split into two segments (Top-Left to Top-Middle and Top-Middle to Top-Right)
+      drawDiamondsOnHorizontalSegment(playAreaX, playAreaX + playAreaWidth/2, playAreaY, numDiamondsHorizontal, diamondSize, true);
+      drawDiamondsOnHorizontalSegment(playAreaX + playAreaWidth/2, playAreaX + playAreaWidth, playAreaY, numDiamondsHorizontal, diamondSize, true);
+
+      // Bottom rail: split into two segments.
+      drawDiamondsOnHorizontalSegment(playAreaX, playAreaX + playAreaWidth/2, playAreaY + playAreaHeight, numDiamondsHorizontal, diamondSize, false);
+      drawDiamondsOnHorizontalSegment(playAreaX + playAreaWidth/2, playAreaX + playAreaWidth, playAreaY + playAreaHeight, numDiamondsHorizontal, diamondSize, false);
+
+      // Left rail: from Top-Left to Bottom-Left.
+      const numDiamondsVertical = 3;
+      drawDiamondsOnVerticalSegment(playAreaY, playAreaY + playAreaHeight, playAreaX, numDiamondsVertical, diamondSize, true);
+
+      // Right rail: from Top-Right to Bottom-Right.
+      drawDiamondsOnVerticalSegment(playAreaY, playAreaY + playAreaHeight, playAreaX + playAreaWidth, numDiamondsVertical, diamondSize, false);
+    }
+
+    // Draw the pockets as black circles.
+    function drawPockets() {
+      ctx.fillStyle = 'black';
+      pockets.forEach(p => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, pocketRadius, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    // Draw the balls (cue, object, and block).
+    // (Note: The cue ball on the table is drawn normally without the strike indicator.)
+    function drawBalls() {
+      for (let key in balls) {
+        const ball = balls[key];
+        ctx.fillStyle = ball.color;
+        ctx.beginPath();
+        ctx.arc(ball.x, ball.y, ballRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'black';
+        ctx.stroke();
+      }
+    }
+
+    // Draw the calculated shot path.
+    function drawShotPath() {
+      if (!shotPath) return;
+
+      ctx.lineWidth = 2;
+      if (shotPath.type === 'direct') {
+        ctx.strokeStyle = 'lime';
+        ctx.beginPath();
+        ctx.moveTo(balls.cue.x, balls.cue.y);
+        ctx.lineTo(shotPath.ghost.x, shotPath.ghost.y);
+        ctx.stroke();
+      } else if (shotPath.type === 'bank') {
+        ctx.strokeStyle = 'orange';
+        ctx.beginPath();
+        ctx.moveTo(balls.cue.x, balls.cue.y);
+        ctx.lineTo(shotPath.bounce.x, shotPath.bounce.y);
+        ctx.lineTo(shotPath.ghost.x, shotPath.ghost.y);
+        ctx.stroke();
+      }
+      // Mark the ghost ball position with a cyan circle.
+      ctx.strokeStyle = 'cyan';
+      ctx.beginPath();
+      ctx.arc(shotPath.ghost.x, shotPath.ghost.y, ballRadius, 0, Math.PI * 2);
+      ctx.stroke();
+      // Draw object-to-pocket path in blue.
+      ctx.strokeStyle = 'blue';
+      ctx.beginPath();
+      ctx.moveTo(balls.object.x, balls.object.y);
+      ctx.lineTo(shotPath.pocket.x, shotPath.pocket.y);
+      ctx.stroke();
+    }
+
+    // --- CUE BALL DIAGRAM (Separate Graphic) ---
+    // Draw a large white cue ball in the diagram with a strike indicator.
+    function drawCueBallDiagram() {
+      // Clear the diagram canvas.
+      cueDiagramCtx.clearRect(0, 0, cueDiagramWidth, cueDiagramHeight);
+      // Draw the cue ball (large white circle with black outline).
+      cueDiagramCtx.fillStyle = "white";
+      cueDiagramCtx.beginPath();
+      cueDiagramCtx.arc(diagramCenter.x, diagramCenter.y, diagramBallRadius, 0, Math.PI * 2);
+      cueDiagramCtx.fill();
+      cueDiagramCtx.strokeStyle = "black";
+      cueDiagramCtx.lineWidth = 2;
+      cueDiagramCtx.stroke();
+
+      // If a shot has been computed, draw the strike indicator.
+      if (shotPath && shotPath.strike) {
+        // Compute offset from cue ball center (from the table shot calculation).
+        const offsetX = shotPath.strike.x - balls.cue.x;
+        const offsetY = shotPath.strike.y - balls.cue.y;
+        // Scale the offset to the diagram (diagramBallRadius / ballRadius).
+        const scale = diagramBallRadius / ballRadius;
+        const diagramIndicatorX = diagramCenter.x + offsetX * scale;
+        const diagramIndicatorY = diagramCenter.y + offsetY * scale;
+        drawStrikeIndicatorOnDiagram(diagramIndicatorX, diagramIndicatorY, 8);
+      }
+    }
+
+    // Draw a round strike indicator on the cue ball diagram.
+    function drawStrikeIndicatorOnDiagram(x, y, r) {
+      const grad = cueDiagramCtx.createRadialGradient(x, y, r * 0.3, x, y, r);
+      grad.addColorStop(0, "#fff");
+      grad.addColorStop(1, "gold");
+      cueDiagramCtx.fillStyle = grad;
+      cueDiagramCtx.beginPath();
+      cueDiagramCtx.arc(x, y, r, 0, Math.PI * 2);
+      cueDiagramCtx.fill();
+      cueDiagramCtx.strokeStyle = "black";
+      cueDiagramCtx.lineWidth = 1;
+      cueDiagramCtx.stroke();
+    }
+
+    // --- SHOT CALCULATIONS ---
+
+    // Compute the ghost ball position for a direct shot.
+    function getGhostBall(objectBall, pocket, ballRadius) {
+      const dx = pocket.x - objectBall.x;
+      const dy = pocket.y - objectBall.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d === 0) return null;
+      return {
+        x: objectBall.x - (dx / d) * (2 * ballRadius),
+        y: objectBall.y - (dy / d) * (2 * ballRadius)
+      };
+    }
+
+    // Check if the line segment from p1 to p2 passes too close to a circle.
+    function lineIntersectsCircle(p1, p2, circle, radius) {
+      const vx = p2.x - p1.x;
+      const vy = p2.y - p1.y;
+      const wx = circle.x - p1.x;
+      const wy = circle.y - p1.y;
+      const c1 = vx * wx + vy * wy;
+      const c2 = vx * vx + vy * vy;
+      let t = c1 / c2;
+      if (t < 0) t = 0;
+      if (t > 1) t = 1;
+      const closest = {
+        x: p1.x + t * vx,
+        y: p1.y + t * vy
+      };
+      const dx = closest.x - circle.x;
+      const dy = closest.y - circle.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      return dist < radius;
+    }
+
+    // Compute the best bank shot by testing all cushions and selecting the one with minimum travel distance.
+    function computeBankShot(cue, ghost, block, ballRadius) {
+      const cushions = [
+        { name: 'top', type: 'horizontal', value: playAreaY },
+        { name: 'bottom', type: 'horizontal', value: playAreaY + playAreaHeight },
+        { name: 'left', type: 'vertical', value: playAreaX },
+        { name: 'right', type: 'vertical', value: playAreaX + playAreaWidth }
+      ];
+      let bestShot = null;
+      let bestDistance = Infinity;
+      for (let cushion of cushions) {
+        let ghostReflect;
+        if (cushion.type === 'horizontal') {
+          ghostReflect = { x: ghost.x, y: 2 * cushion.value - ghost.y };
+          if (ghostReflect.y === cue.y) continue;
+          const t = (cushion.value - cue.y) / (ghostReflect.y - cue.y);
+          if (t < 0 || t > 1) continue;
+          const bounce = {
+            x: cue.x + t * (ghostReflect.x - cue.x),
+            y: cushion.value
+          };
+          if (bounce.x < playAreaX || bounce.x > playAreaX + playAreaWidth) continue;
+          if (lineIntersectsCircle(cue, bounce, block, ballRadius * 2) ||
+              lineIntersectsCircle(bounce, ghost, block, ballRadius * 2)) continue;
+          const distance = getDistance(cue, bounce) + getDistance(bounce, ghost);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestShot = { bounce: bounce, cushion: cushion.name };
+          }
+        } else { // vertical cushion
+          ghostReflect = { x: 2 * cushion.value - ghost.x, y: ghost.y };
+          if (ghostReflect.x === cue.x) continue;
+          const t = (cushion.value - cue.x) / (ghostReflect.x - cue.x);
+          if (t < 0 || t > 1) continue;
+          const bounce = {
+            x: cushion.value,
+            y: cue.y + t * (ghostReflect.y - cue.y)
+          };
+          if (bounce.y < playAreaY || bounce.y > playAreaY + playAreaHeight) continue;
+          if (lineIntersectsCircle(cue, bounce, block, ballRadius * 2) ||
+              lineIntersectsCircle(bounce, ghost, block, ballRadius * 2)) continue;
+          const distance = getDistance(cue, bounce) + getDistance(bounce, ghost);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestShot = { bounce: bounce, cushion: cushion.name };
+          }
+        }
+      }
+      return bestShot;
+    }
+
+    // Helper: Euclidean distance between two points.
+    function getDistance(p1, p2) {
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    // Determine the suggested English (spin) and force based on the shot.
+    function getShotSuggestion(shotType, cue, ghost, bounce, cushion) {
+      let english = "Center English";
+      let force = "moderate force";
+      let d = 0;
+      if (shotType === "direct") {
+        const dx = ghost.x - cue.x;
+        const dy = ghost.y - cue.y;
+        d = Math.sqrt(dx * dx + dy * dy);
+        const threshold = 5; // pixels
+        if (Math.abs(dx) > Math.abs(dy)) {
+          if (dx > threshold) {
+            english = "Right English";
+          } else if (dx < -threshold) {
+            english = "Left English";
+          }
+        } else {
+          if (dy > threshold) {
+            english = "Bottom English";
+          } else if (dy < -threshold) {
+            english = "Top English";
+          }
+        }
+      } else if (shotType === "bank") {
+        if (cushion === "top") {
+          english = "Top English";
+        } else if (cushion === "bottom") {
+          english = "Bottom English";
+        } else if (cushion === "left") {
+          english = "Left English";
+        } else if (cushion === "right") {
+          english = "Right English";
+        }
+        d = getDistance(cue, bounce) + getDistance(bounce, ghost);
+      }
+      if (d < 150) {
+        force = "light force";
+      } else if (d < 300) {
+        force = "moderate force";
+      } else {
+        force = "heavy force";
+      }
+      return { english, force };
+    }
+
+    // Compute the recommended strike point on the cue ball.
+    // (This value is computed relative to the cue ball’s center on the table.)
+    function computeStrikePoint(cue, shotDir, english) {
+      const offset = ballRadius * 0.7;
+      if (english === "Center English") {
+        return { x: cue.x, y: cue.y };
+      } else if (english === "Left English" || english === "Right English") {
+        let dx = shotDir.x, dy = shotDir.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len === 0) return { x: cue.x, y: cue.y };
+        // Left perpendicular (counterclockwise): (-dy, dx)
+        let perp = { x: -dy / len, y: dx / len };
+        if (english === "Right English") {
+          perp.x = -perp.x;
+          perp.y = -perp.y;
+        }
+        return { x: cue.x + perp.x * offset, y: cue.y + perp.y * offset };
+      } else if (english === "Top English") {
+        return { x: cue.x, y: cue.y - offset };
+      } else if (english === "Bottom English") {
+        return { x: cue.x, y: cue.y + offset };
+      } else {
+        return { x: cue.x, y: cue.y };
+      }
+    }
+
+    // Calculate the shot when a pocket is clicked.
+    function calculateShot(pocket) {
+      const ghost = getGhostBall(balls.object, pocket, ballRadius);
+      if (!ghost) return;
+
+      // Check if the direct shot path is clear (both cue-to-ghost and object-to-pocket).
+      const directClear =
+        !lineIntersectsCircle(balls.cue, ghost, balls.block, ballRadius * 2) &&
+        !lineIntersectsCircle(balls.object, pocket, balls.block, ballRadius * 2);
+
+      const messageDiv = document.getElementById('message');
+
+      if (directClear) {
+        const suggestion = getShotSuggestion("direct", balls.cue, ghost, null, null);
+        const shotDir = { x: ghost.x - balls.cue.x, y: ghost.y - balls.cue.y };
+        const strike = computeStrikePoint(balls.cue, shotDir, suggestion.english);
+        shotPath = { type: 'direct', ghost: ghost, pocket: pocket, strike: strike };
+        messageDiv.innerText = "Direct shot available. Suggested: " + suggestion.english + " with " + suggestion.force + ".";
+      } else {
+        // Try to find a bank shot (using any cushion, selecting the best option).
+        const bank = computeBankShot(balls.cue, ghost, balls.block, ballRadius);
+        if (bank) {
+          const suggestion = getShotSuggestion("bank", balls.cue, ghost, bank.bounce, bank.cushion);
+          const shotDir = { x: bank.bounce.x - balls.cue.x, y: bank.bounce.y - balls.cue.y };
+          const strike = computeStrikePoint(balls.cue, shotDir, suggestion.english);
+          shotPath = { type: 'bank', ghost: ghost, pocket: pocket, bounce: bank.bounce, cushion: bank.cushion, strike: strike };
+          messageDiv.innerText = "Direct shot blocked. Bank shot off the " + bank.cushion + " cushion available. Suggested: " + suggestion.english + " with " + suggestion.force + ".";
+        } else {
+          shotPath = null;
+          messageDiv.innerText = "Shot is blocked by the blocking ball.";
+        }
+      }
+      draw();
+    }
+
+    // === EVENT HANDLERS ===
+
+    canvas.addEventListener('mousedown', function(e) {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      for (let key in balls) {
+        const ball = balls[key];
+        const dx = x - ball.x;
+        const dy = y - ball.y;
+        if (Math.sqrt(dx * dx + dy * dy) < ballRadius) {
+          draggingBall = key;
+          dragOffset.x = dx;
+          dragOffset.y = dy;
+          return;
+        }
+      }
+      for (let p of pockets) {
+        const dx = x - p.x;
+        const dy = y - p.y;
+        if (Math.sqrt(dx * dx + dy * dy) < pocketRadius) {
+          calculateShot(p);
+          return;
+        }
+      }
+    });
+
+    canvas.addEventListener('mousemove', function(e) {
+      if (!draggingBall) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      balls[draggingBall].x = x - dragOffset.x;
+      balls[draggingBall].y = y - dragOffset.y;
+      shotPath = null;
+      document.getElementById('message').innerText = "";
+      draw();
+    });
+
+    canvas.addEventListener('mouseup', function() {
+      draggingBall = null;
+    });
+    canvas.addEventListener('mouseout', function() {
+      draggingBall = null;
+    });
+
+    canvas.addEventListener('touchstart', function(e) {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const touch = e.touches[0];
+      const x = touch.clientX - rect.left;
+      const y = touch.clientY - rect.top;
+      for (let key in balls) {
+        const ball = balls[key];
+        const dx = x - ball.x;
+        const dy = y - ball.y;
+        if (Math.sqrt(dx * dx + dy * dy) < ballRadius) {
+          draggingBall = key;
+          dragOffset.x = dx;
+          dragOffset.y = dy;
+          return;
+        }
+      }
+      for (let p of pockets) {
+        const dx = x - p.x;
+        const dy = y - p.y;
+        if (Math.sqrt(dx * dx + dy * dy) < pocketRadius) {
+          calculateShot(p);
+          return;
+        }
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', function(e) {
+      e.preventDefault();
+      if (!draggingBall) return;
+      const rect = canvas.getBoundingClientRect();
+      const touch = e.touches[0];
+      const x = touch.clientX - rect.left;
+      const y = touch.clientY - rect.top;
+      balls[draggingBall].x = x - dragOffset.x;
+      balls[draggingBall].y = y - dragOffset.y;
+      shotPath = null;
+      document.getElementById('message').innerText = "";
+      draw();
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', function() {
+      draggingBall = null;
+    });
+
+    // Initial drawing.
+    draw();
+  </script>
+</body>
+</html>
